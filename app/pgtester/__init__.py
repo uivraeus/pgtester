@@ -8,6 +8,7 @@ __init__.py serves double duty:
 
 import logging
 import os
+import sys
 import threading
 
 from flask import Flask
@@ -19,8 +20,9 @@ def create_app(test_config=None):
     app = Flask(__name__, instance_path='/tmp/pgtester-instance')
     app.config.from_mapping(
         # defaults
-        SECRET_KEY="dev",  # <-- used for session cookies - replace with actual secret in prod
+        PERIODIC_INTERVAL="5", # every 5 seconds
         POSTGRES_HOST="localhost",
+        POSTGRES_RO_HOST="localhost",
         POSTGRES_PORT="5432",
         POSTGRES_DB="pgtester",
         POSTGRES_USER="postgres",
@@ -49,29 +51,25 @@ def create_app(test_config=None):
     db.init_app(app)
 
     from . import pgtester
-    
+
     app.add_url_rule("/reset", view_func=pgtester.reset_db)
     app.add_url_rule("/", view_func=pgtester.get_db_status)
-    
-    # Check current status and add new entry immediately
-    with app.app_context():
-        status = pgtester.get_db_status()
-        if status is not None:
-            app.logger.info(pgtester.status_to_string(status))
-        else:
-            app.logger.info("Empty database at startup!")
 
-        pgtester.write_current_time()
+    command_line = ' '.join(sys.argv)
+    is_running_server = (' run' in command_line) or ('gunicorn' in command_line)
+    if is_running_server:
+        # Check current status and add new entry immediately
+        pgtester.startup_access(app)
 
-    # Start periodic writes in the background.
-    t = threading.Thread(target=pgtester.periodic_writes, args=(app, 5,))
-    t.start()    
-    
-    app.logger.info("🚀 pgtester app launched! DB config: host=%s:%s, user=%s, db=%s",
-        app.config['POSTGRES_HOST'],
-        app.config['POSTGRES_PORT'],
-        app.config['POSTGRES_USER'],
-        app.config['POSTGRES_DB'])
+        # Start periodic writes in the background.
+        t = threading.Thread(target=pgtester.periodic_writes_and_reads, args=(app, int(app.config['PERIODIC_INTERVAL']),))
+        t.start()
+
+        app.logger.info("🚀 pgtester app launched! DB config: host=%s, ro_host=%s, port=%s, user=%s, db=%s",
+            app.config['POSTGRES_HOST'],
+            app.config['POSTGRES_RO_HOST'],
+            app.config['POSTGRES_PORT'],
+            app.config['POSTGRES_USER'],
+            app.config['POSTGRES_DB'])
 
     return app
-

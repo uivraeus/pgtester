@@ -1,13 +1,12 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:13 # 👉 https://hub.docker.com/_/postgres
-    network_mode: bridge # skip dedicated network to make it easier to connect from other individual running containers 
+    container_name: dev-db-postgres
+    network_mode: bridge # skip dedicated network to make it easier to connect from other individual running containers
     ports:
       - 5432:5432
     volumes:
-      - postgres_data:/var/lib/postgresql/data/ 
+      - postgres_data:/var/lib/postgresql/data/
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password

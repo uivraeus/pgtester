@@ -23,13 +23,24 @@ def get_req_cursor():
 
     return g.db_cur
 
+def get_req_ro_cursor():
+    """Get read-only access to the database via a request specific (reusable) cursor """
+
+    if 'db_ro_cur' not in g:
+        g.db_ro_cur = get_fresh_ro_cursor()
+
+    return g.db_ro_cur
 
 def close_req_db(e=None):  # pylint: disable=unused-argument
     """Clean-up request specific database connection (if there is one)"""
     db_cur = g.pop('db_cur', None)
+    db_ro_cur = g.pop('db_ro_cur', None)
 
     if db_cur is not None:
         close_cursor_connection(db_cur)
+
+    if db_ro_cur is not None:
+        close_cursor_connection(db_ro_cur)
 
 
 def get_fresh_cursor():
@@ -44,6 +55,20 @@ def get_fresh_cursor():
         )
 
     # https://varun-verma.medium.com/use-psycopg2-to-return-dictionary-like-values-key-value-pairs-4d3047d8de1b
+    cursor = connection.cursor(cursor_factory = psycopg2.extras.RealDictCursor)
+
+    return cursor
+
+def get_fresh_ro_cursor():
+    """Create a new connection and cursor for database read-only access"""
+    connection = psycopg2.connect(
+            dbname=current_app.config['POSTGRES_DB'],
+            user=current_app.config['POSTGRES_USER'],
+            password=current_app.config['POSTGRES_PASSWORD'],
+            host=current_app.config['POSTGRES_RO_HOST'],
+            port=current_app.config['POSTGRES_PORT']
+        )
+
     cursor = connection.cursor(cursor_factory = psycopg2.extras.RealDictCursor)
 
     return cursor
@@ -76,7 +101,7 @@ def init_db(cursor = None):
         cursor = get_req_cursor()
 
     cursor.execute('DROP TABLE IF EXISTS test_writes CASCADE')
-    
+
     cursor.execute("""
         CREATE TABLE test_writes (
             id SERIAL PRIMARY KEY,
