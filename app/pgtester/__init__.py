@@ -8,8 +8,8 @@ __init__.py serves double duty:
 
 import logging
 import os
+import signal
 import sys
-import threading
 
 from flask import Flask
 
@@ -43,6 +43,8 @@ def create_app(test_config=None):
         gunicorn_logger = logging.getLogger('gunicorn.error')
         app.logger.handlers = gunicorn_logger.handlers
         app.logger.setLevel(gunicorn_logger.level)
+    else:
+        app.logger.setLevel("DEBUG")
 
     # ensure the instance folder exists (if/when needed)
     os.makedirs(app.instance_path, exist_ok=True)
@@ -58,18 +60,26 @@ def create_app(test_config=None):
     command_line = ' '.join(sys.argv)
     is_running_server = (' run' in command_line) or ('gunicorn' in command_line)
     if is_running_server:
-        # Check current status and add new entry immediately
-        pgtester.startup_access(app)
-
-        # Start periodic writes in the background.
-        t = threading.Thread(target=pgtester.periodic_writes_and_reads, args=(app, int(app.config['PERIODIC_INTERVAL']),))
-        t.start()
-
         app.logger.info("🚀 pgtester app launched! DB config: host=%s, ro_host=%s, port=%s, user=%s, db=%s",
             app.config['POSTGRES_HOST'],
             app.config['POSTGRES_RO_HOST'],
             app.config['POSTGRES_PORT'],
             app.config['POSTGRES_USER'],
             app.config['POSTGRES_DB'])
+        
+        # Check current status and add new entry immediately
+        pgtester.startup_access(app)
+
+        # Start periodic writes in the background
+        pgtester.start_periodic_thread(app, int(app.config['PERIODIC_INTERVAL']))
+
+        # Configure graceful shutdown
+        def terminate(sig, *args):
+            app.logger.info("Received %s, initiating shutdown...", signal.Signals(sig).name)
+            pgtester.stop_periodic_thread()
+            exit(0)
+        
+        signal.signal(signal.SIGINT, terminate)
+        signal.signal(signal.SIGTERM, terminate)
 
     return app

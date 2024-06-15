@@ -3,12 +3,18 @@ DB operations
 """
 
 import time
+import threading
+
 from datetime import datetime, timedelta, timezone
 from pgtester.db import get_req_cursor, get_req_ro_cursor
 from psycopg2 import OperationalError
 
+periodic_thread = None
+periodic_thread_stop = False
+
 def startup_access(app):
     """Log latest DB entry (from prior execution) and add a fresh one"""
+    app.logger.info("Running startup access check...")
     try:
         with app.app_context():
             status = get_db_status()
@@ -21,32 +27,62 @@ def startup_access(app):
     except OperationalError as e:
         app.logger.error("Error accessing DB at startup: %s", e)
 
+def start_periodic_thread(app, interval_seconds):
+    """Start periodic access checks"""
+    global periodic_thread
+    global periodic_thread_stop
+
+    if periodic_thread is not None:
+        app.logger.error("Trying to start periodic thread when it's already running")
+        return
+    
+    app.logger.info("Starting periodic write/read access thread...")
+    periodic_thread_stop = False
+    periodic_thread = threading.Thread(target=periodic_writes_and_reads, args=(app, interval_seconds,))
+    periodic_thread.start()
+
+def stop_periodic_thread():
+    """Stop periodic access checks"""
+    global periodic_thread
+    global periodic_thread_stop
+        
+    if periodic_thread is not None:
+        periodic_thread_stop = True
+        periodic_thread.join()
+        periodic_thread = None
+    
 def periodic_writes_and_reads(app, interval_seconds=1):
     """Thread routine"""
-    while True:
-        with app.app_context():
-            time.sleep(interval_seconds)
-            try:
-                ts = write_current_time(app.logger)
-                status = get_db_status()
-                ro_status = get_db_status(ro_access=True)
-                if status is not None:
-                    delta = ts - status['last_write_ts']
-                    if delta != timedelta(0):
-                        app.logger.warn("Different timestamp read after write!, delta=%s", delta)
-                    app.logger.info(status_to_string(status))
-                else:
-                    app.logger.warn("Empty response from DB")
+    last_exec_time = datetime.now()
+    while not periodic_thread_stop:
+        time.sleep(0.1)
+        if (datetime.now() - last_exec_time) >= timedelta(seconds=interval_seconds):
+            last_exec_time = datetime.now()
+            with app.app_context():
+                try:
+                    ts = write_current_time(app.logger)
+                    status = get_db_status()
+                    validate_read_status(app, ts, status, "read/write")
+                except OperationalError as e:
+                    app.logger.error("Error accessing (read/write) DB: %s", e)
 
-                if ro_status is not None:
-                    ro_delta = ts - ro_status['last_write_ts']
-                    if ro_delta != timedelta(0):
-                        app.logger.warn("Different timestamp read (read-only) after write!, delta=%s", ro_delta)
-                    app.logger.info(status_to_string(ro_status))
-                else:
-                    app.logger.warn("Empty response from read-only DB access")
-            except OperationalError as e:
-                app.logger.error("Error accessing DB: %s", e)
+                try:
+                    ro_status = get_db_status(ro_access=True)
+                    validate_read_status(app, ts, ro_status, "read-only")                    
+                except OperationalError as e:
+                    app.logger.error("Error accessing (read-only) DB: %s", e)
+
+    app.logger.info("Periodic thread terminated")
+
+def validate_read_status(app, ts, status, db_kind):
+    """Helper for comparing last read timestamp against last written"""
+    if status is not None:
+        delta = ts - status['last_write_ts']
+        if delta != timedelta(0):
+            app.logger.warn("Different timestamp read after write!, delta=%s (%s)", delta, db_kind)
+        app.logger.info(status_to_string(status))
+    else:
+        app.logger.warn("Empty response from (%s) DB", db_kind)
 
 def status_to_string(status):
     """Format string based on DB status"""
